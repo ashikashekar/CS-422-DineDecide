@@ -8,4 +8,5 @@
 7b35824109da47ea815aef153b566dad
 
 **Run Program**
+`cd dinedecide`
 `npm start`
