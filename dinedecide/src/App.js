@@ -4,22 +4,25 @@ import { Search, Heart, Clock, Users, ArrowLeft, Sliders, Home as HomeIcon, Star
 const DineDecideApp = () => {
   const [currentScreen, setCurrentScreen] = useState('loading');
   const [dietaryRestrictions, setDietaryRestrictions] = useState([]);
-  const [selectedFilter, setSelectedFilter] = useState(null);
-  const [filterValue, setFilterValue] = useState('');
+  const [selectedFilter, setSelectedFilter] = useState(null); // cuisine / ingredients / surprise
+  const [filterValue, setFilterValue] = useState('');          // used for cuisine
   const [recipes, setRecipes] = useState([]);
   const [favorites, setFavorites] = useState([]);
   const [disliked, setDisliked] = useState([]);
   const [recentRecipes, setRecentRecipes] = useState([]);
   const [selectedRecipe, setSelectedRecipe] = useState(null);
 
-  // This one is still used in the FilterModal "Ingredients You want"
+  // For ingredient filters (include from modal)
   const [homeSearchQuery, setHomeSearchQuery] = useState('');
+  const [excludeIngredients, setExcludeIngredients] = useState('');
 
   const [showFilterModal, setShowFilterModal] = useState(false);
-  const [excludeIngredients, setExcludeIngredients] = useState('');
   const [randomRecipe, setRandomRecipe] = useState(null);
   const [ratings, setRatings] = useState({});
   const [hoveredStar, setHoveredStar] = useState(0);
+
+  // NEW: meal types chosen in filter modal
+  const [mealTypes, setMealTypes] = useState([]); // e.g. ['Breakfast', 'Dinner']
 
   // API Configuration
   const SPOONACULAR_API_KEY = '7b35824109da47ea815aef153b566dad';
@@ -27,7 +30,63 @@ const DineDecideApp = () => {
 
   const dietOptions = ['Vegetarian', 'Vegan', 'Gluten Free', 'Dairy Free', 'Ketogenic', 'Paleo'];
   const cuisineOptions = ['Italian', 'Mexican', 'Chinese', 'Indian', 'Japanese', 'Thai', 'French', 'Greek'];
-  const mealTypeOptions = ['Breakfast', 'Lunch', 'Dinner']; // reserved for future use
+  const mealTypeOptions = ['Breakfast', 'Lunch', 'Dinner'];
+
+  // Map UI labels to Spoonacular diet strings
+  const dietApiMap = {
+    Vegetarian: 'vegetarian',
+    Vegan: 'vegan',
+    'Gluten Free': 'gluten free',
+    'Dairy Free': 'dairy free',
+    Ketogenic: 'ketogenic',
+    Paleo: 'paleo',
+  };
+
+  // Map UI meal types to Spoonacular `type` parameter
+  const mealTypeApiMap = {
+    Breakfast: 'breakfast',
+    Lunch: 'main course',
+    Dinner: 'main course',
+  };
+
+  // Helper: normalize comma-separated ingredients -> ['nuts', 'peanuts']
+  const normalizeIngredientsList = (csv) =>
+    (csv || '')
+      .split(',')
+      .map((s) => s.trim().toLowerCase())
+      .filter(Boolean);
+
+  // Helper: apply client-side filters (disliked + exclude ingredients)
+  const applyClientFilters = (apiResults, excludedList) => {
+    const results = apiResults || [];
+    return results.filter((recipe) => {
+      // Filter out disliked recipes
+      if (disliked.includes(recipe.id)) return false;
+
+      // Filter out recipes containing excluded ingredients (best-effort text match)
+      if (excludedList.length && recipe.extendedIngredients) {
+        const ingredientText = recipe.extendedIngredients
+          .map((ing) => (ing.original || ing.name || '').toLowerCase())
+          .join(' ');
+
+        if (excludedList.some((bad) => ingredientText.includes(bad))) {
+          return false;
+        }
+      }
+
+      return true;
+    });
+  };
+
+  // Reset all filters 
+  function resetFilters() {
+    setDietaryRestrictions([]);
+    setSelectedFilter(null);
+    setFilterValue('');
+    setHomeSearchQuery('');
+    setExcludeIngredients('');
+    setMealTypes([]);
+  }
 
   // Load saved data
   useEffect(() => {
@@ -39,14 +98,17 @@ const DineDecideApp = () => {
     if (savedDisliked) setDisliked(JSON.parse(savedDisliked));
     if (savedRecent) setRecentRecipes(JSON.parse(savedRecent));
     if (savedRatings) setRatings(JSON.parse(savedRatings));
-    
+
     setTimeout(() => setCurrentScreen('home'), 2000);
   }, []);
 
-  // Fetch random recipe for home page
+  // When we land on Home: reset filters + fetch random recipe 
   useEffect(() => {
-    if (currentScreen === 'home' && !randomRecipe) {
-      fetchRandomRecipe();
+    if (currentScreen === 'home') {
+      resetFilters();
+      if (!randomRecipe) {
+        fetchRandomRecipe();
+      }
     }
   }, [currentScreen, randomRecipe]);
 
@@ -64,40 +126,78 @@ const DineDecideApp = () => {
     }
   };
 
-  // Fetch recipes
-  const fetchRecipes = async (specificMealType = null) => {
+  // Fetch recipes using current filter state OR overrides from modal
+  const fetchRecipes = async (options = {}) => {
+    const {
+      includeIngredientsOverride, // from modal include text at click time
+      excludeIngredientsOverride, // from modal exclude text at click time
+    } = options;
+
+    const includeValue =
+      includeIngredientsOverride !== undefined
+        ? includeIngredientsOverride
+        : homeSearchQuery;
+
+    const excludeValue =
+      excludeIngredientsOverride !== undefined
+        ? excludeIngredientsOverride
+        : excludeIngredients;
+
     try {
       let url = `${SPOONACULAR_BASE}/complexSearch?apiKey=${SPOONACULAR_API_KEY}&number=12&addRecipeInformation=true&fillIngredients=true`;
 
-      // Add meal type if specified or from state
-      const mealType = specificMealType || (selectedFilter === 'mealType' ? filterValue : null);
-      if (mealType) {
-        url += `&type=${mealType.toLowerCase()}`;
+      // Meal type from mealTypes (checkbox)
+      if (mealTypes.length > 0) {
+        const firstMeal = mealTypes[0]; // use the first checked meal type
+        const apiMealType = mealTypeApiMap[firstMeal];
+        if (apiMealType) {
+          url += `&type=${encodeURIComponent(apiMealType)}`;
+        }
       }
 
+      // Diet from first selected diet option
       if (dietaryRestrictions.length > 0) {
-        url += `&diet=${dietaryRestrictions[0].toLowerCase().replace(' ', '')}`;
+        const dietLabel = dietaryRestrictions[0];
+        const dietParam = dietApiMap[dietLabel];
+        if (dietParam) {
+          url += `&diet=${encodeURIComponent(dietParam)}`;
+        }
       }
 
+      // Cuisine / includeIngredients / surprise filters
       if (selectedFilter === 'cuisine' && filterValue) {
-        url += `&cuisine=${filterValue}`;
-      } else if (selectedFilter === 'ingredients' && homeSearchQuery) {
-        url += `&includeIngredients=${homeSearchQuery}`;
+        url += `&cuisine=${encodeURIComponent(filterValue)}`;
+      } else if (selectedFilter === 'ingredients' && includeValue) {
+        const normalizedInclude = includeValue
+          .split(',')
+          .map((s) => s.trim())
+          .filter(Boolean)
+          .join(',');
+        if (normalizedInclude) {
+          url += `&includeIngredients=${encodeURIComponent(normalizedInclude)}`;
+        }
       } else if (selectedFilter === 'surprise') {
         url += `&sort=random`;
       }
 
-      if (excludeIngredients) {
-        url += `&excludeIngredients=${excludeIngredients}`;
+      // Exclude ingredients 
+      if (excludeValue) {
+        const normalizedExclude = excludeValue
+          .split(',')
+          .map((s) => s.trim())
+          .filter(Boolean)
+          .join(',');
+        if (normalizedExclude) {
+          url += `&excludeIngredients=${encodeURIComponent(normalizedExclude)}`;
+        }
       }
 
       const response = await fetch(url);
       const data = await response.json();
-      
-      const filteredRecipes = data.results?.filter(
-        recipe => !disliked.includes(recipe.id)
-      ) || [];
-      
+
+      const excludedList = normalizeIngredientsList(excludeValue);
+      const filteredRecipes = applyClientFilters(data.results, excludedList);
+
       setRecipes(filteredRecipes);
       setCurrentScreen('searchResults');
     } catch (error) {
@@ -105,21 +205,20 @@ const DineDecideApp = () => {
     }
   };
 
-  // Search by query (used by all search bars)
+  // Search by query (used by all search bars) – still respects excluded ingredients client-side
   const searchByQuery = async (query) => {
     const trimmed = (query || '').trim();
     if (!trimmed) return;
-    
+
     try {
       let url = `${SPOONACULAR_BASE}/complexSearch?apiKey=${SPOONACULAR_API_KEY}&number=12&addRecipeInformation=true&fillIngredients=true&query=${encodeURIComponent(trimmed)}`;
 
       const response = await fetch(url);
       const data = await response.json();
-      
-      const filteredRecipes = data.results?.filter(
-        recipe => !disliked.includes(recipe.id)
-      ) || [];
-      
+
+      const excludedList = normalizeIngredientsList(excludeIngredients);
+      const filteredRecipes = applyClientFilters(data.results, excludedList);
+
       setRecipes(filteredRecipes);
       setCurrentScreen('searchResults');
     } catch (error) {
@@ -135,12 +234,12 @@ const DineDecideApp = () => {
       );
       const data = await response.json();
       setSelectedRecipe(data);
-      
+
       // Add to recent
-      const updatedRecent = [data, ...recentRecipes.filter(r => r.id !== data.id)].slice(0, 12);
+      const updatedRecent = [data, ...recentRecipes.filter((r) => r.id !== data.id)].slice(0, 12);
       setRecentRecipes(updatedRecent);
       localStorage.setItem('recent', JSON.stringify(updatedRecent));
-      
+
       setCurrentScreen('detail');
     } catch (error) {
       console.error('Error fetching recipe details:', error);
@@ -150,8 +249,8 @@ const DineDecideApp = () => {
   // Toggle favorite
   const toggleFavorite = (recipe) => {
     let updatedFavorites;
-    if (favorites.find(fav => fav.id === recipe.id)) {
-      updatedFavorites = favorites.filter(fav => fav.id !== recipe.id);
+    if (favorites.find((fav) => fav.id === recipe.id)) {
+      updatedFavorites = favorites.filter((fav) => fav.id !== recipe.id);
     } else {
       updatedFavorites = [...favorites, recipe];
     }
@@ -163,7 +262,7 @@ const DineDecideApp = () => {
   const rateRecipe = (recipeId, rating) => {
     const updatedRatings = {
       ...ratings,
-      [recipeId]: rating
+      [recipeId]: rating,
     };
     setRatings(updatedRatings);
     localStorage.setItem('ratings', JSON.stringify(updatedRatings));
@@ -201,26 +300,34 @@ const DineDecideApp = () => {
 
   // Loading Screen
   const LoadingScreen = () => (
-    <div className="min-h-screen flex items-center justify-center" style={{ backgroundColor: '#F5FBFF', fontFamily: 'Josefin Sans, sans-serif' }}>
+    <div
+      className="min-h-screen flex items-center justify-center"
+      style={{ backgroundColor: '#F5FBFF', fontFamily: 'Josefin Sans, sans-serif' }}
+    >
       <div className="text-center">
-        <div className="w-32 h-32 rounded-full flex items-center justify-center mx-auto mb-6 animate-pulse" style={{ backgroundColor: '#00A7B0' }}>
+        <div
+          className="w-32 h-32 rounded-full flex items-center justify-center mx-auto mb-6 animate-pulse"
+          style={{ backgroundColor: '#00A7B0' }}
+        >
           <span className="text-white text-4xl font-bold">DD</span>
         </div>
-        <h1 className="text-3xl font-bold" style={{ color: '#171F3A' }}>DineDecide</h1>
+        <h1 className="text-3xl font-bold" style={{ color: '#171F3A' }}>
+          DineDecide
+        </h1>
       </div>
     </div>
   );
 
   // Filter Modal Overlay
   const FilterModal = ({ type, onClose }) => {
-    const includeRef = useRef(null);  // Ingredients you want
-    const excludeRef = useRef(null);  // Ingredients you don't want
+    const includeRef = useRef(null); // Ingredients you want
+    const excludeRef = useRef(null); // Ingredients you don't want
 
     const handleSearchClick = () => {
       const includeVal = includeRef.current ? includeRef.current.value : '';
       const excludeVal = excludeRef.current ? excludeRef.current.value : '';
 
-      // Save into state so fetchRecipes can use them
+      // Save into state so they’re available for future opens / searchByQuery
       setHomeSearchQuery(includeVal);
       setExcludeIngredients(excludeVal);
 
@@ -229,7 +336,12 @@ const DineDecideApp = () => {
       }
 
       onClose();
-      fetchRecipes();
+
+      // Use overrides so we don't run into async state timing 
+      fetchRecipes({
+        includeIngredientsOverride: includeVal,
+        excludeIngredientsOverride: excludeVal,
+      });
     };
 
     const getTitle = () => {
@@ -240,7 +352,10 @@ const DineDecideApp = () => {
     };
 
     return (
-      <div className="fixed inset-0 z-50 flex items-end" style={{ backgroundColor: 'rgba(0,0,0,0.5)' }}>
+      <div
+        className="fixed inset-0 z-50 flex items-end"
+        style={{ backgroundColor: 'rgba(0,0,0,0.5)' }}
+      >
         <div
           className="bg-gray-200 rounded-t-3xl w-full p-6 max-h-[70vh] overflow-y-auto"
           style={{ fontFamily: 'Josefin Sans, sans-serif' }}
@@ -261,22 +376,61 @@ const DineDecideApp = () => {
             >
               {getTitle()}
             </h2>
-            {/* Spacer to balance layout */}
             <div className="w-10" />
           </div>
 
+          {/* Meal Type */}
+          {(type === 'all' || type === 'mealType') && (
+            <div className="mb-6">
+              <h3 className="font-bold text-lg mb-3" style={{ color: '#171F3A' }}>
+                Meal Type
+              </h3>
+              <div className="grid grid-cols-2 gap-3">
+                {mealTypeOptions.map((meal) => (
+                  <label
+                    key={meal}
+                    className="flex items-center bg-white p-3 rounded-lg cursor-pointer"
+                  >
+                    <input
+                      type="checkbox"
+                      checked={mealTypes.includes(meal)}
+                      onChange={() => {
+                        if (mealTypes.includes(meal)) {
+                          setMealTypes(mealTypes.filter((m) => m !== meal));
+                        } else {
+                          setMealTypes([...mealTypes, meal]);
+                        }
+                      }}
+                      className="w-5 h-5 mr-3"
+                      style={{ accentColor: '#00A7B0' }}
+                    />
+                    <span className="text-sm">{meal}</span>
+                  </label>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* Dietary */}
           {(type === 'all' || type === 'dietary') && (
             <div className="mb-6">
-              <h3 className="font-bold text-lg mb-3" style={{ color: '#171F3A' }}>Dietary Restrictions</h3>
+              <h3 className="font-bold text-lg mb-3" style={{ color: '#171F3A' }}>
+                Dietary Restrictions
+              </h3>
               <div className="grid grid-cols-2 gap-3">
-                {dietOptions.map(option => (
-                  <label key={option} className="flex items-center bg-white p-3 rounded-lg cursor-pointer">
+                {dietOptions.map((option) => (
+                  <label
+                    key={option}
+                    className="flex items-center bg-white p-3 rounded-lg cursor-pointer"
+                  >
                     <input
                       type="checkbox"
                       checked={dietaryRestrictions.includes(option)}
                       onChange={() => {
                         if (dietaryRestrictions.includes(option)) {
-                          setDietaryRestrictions(dietaryRestrictions.filter(d => d !== option));
+                          setDietaryRestrictions(
+                            dietaryRestrictions.filter((d) => d !== option)
+                          );
                         } else {
                           setDietaryRestrictions([...dietaryRestrictions, option]);
                         }
@@ -291,12 +445,18 @@ const DineDecideApp = () => {
             </div>
           )}
 
+          {/* Cuisine */}
           {(type === 'all' || type === 'cuisine') && (
             <div className="mb-6">
-              <h3 className="font-bold text-lg mb-3" style={{ color: '#171F3A' }}>Cuisine</h3>
+              <h3 className="font-bold text-lg mb-3" style={{ color: '#171F3A' }}>
+                Cuisine
+              </h3>
               <div className="grid grid-cols-2 gap-3">
-                {cuisineOptions.map(cuisine => (
-                  <label key={cuisine} className="flex items-center bg-white p-3 rounded-lg cursor-pointer">
+                {cuisineOptions.map((cuisine) => (
+                  <label
+                    key={cuisine}
+                    className="flex items-center bg-white p-3 rounded-lg cursor-pointer"
+                  >
                     <input
                       type="radio"
                       name="cuisine-filter"
@@ -315,9 +475,12 @@ const DineDecideApp = () => {
             </div>
           )}
 
+          {/* Ingredients */}
           {(type === 'all' || type === 'ingredients') && (
             <div className="mb-6">
-              <h3 className="font-bold text-lg mb-3" style={{ color: '#171F3A' }}>Ingredients</h3>
+              <h3 className="font-bold text-lg mb-3" style={{ color: '#171F3A' }}>
+                Ingredients
+              </h3>
               <div className="space-y-4">
                 <div>
                   <label className="block text-base font-semibold mb-2">
@@ -326,7 +489,7 @@ const DineDecideApp = () => {
                   <input
                     type="text"
                     ref={includeRef}
-                    defaultValue={homeSearchQuery}   // still prefill from state, but not controlled
+                    defaultValue={homeSearchQuery}
                     className="w-full p-3 rounded-lg bg-white border-0"
                   />
                 </div>
@@ -357,11 +520,8 @@ const DineDecideApp = () => {
     );
   };
 
-  // 🔧 NEW: Uncontrolled Search Bar Component with Filter Button
-  const SearchBar = ({ 
-    placeholder = "What Would you Like to Eat", 
-    onSearch 
-  }) => {
+  // Uncontrolled Search Bar Component with Filter Button
+  const SearchBar = ({ placeholder = 'What Would you Like to Eat', onSearch }) => {
     const inputRef = useRef(null);
 
     const handleKeyDown = (e) => {
@@ -383,7 +543,7 @@ const DineDecideApp = () => {
             onKeyDown={handleKeyDown}
             className="w-full pl-12 pr-16 py-3 rounded-lg bg-gray-200 text-black border-0"
           />
-          <button 
+          <button
             type="button"
             onClick={() => setShowFilterModal('all')}
             className="absolute right-4 top-1/2 transform -translate-y-1/2"
@@ -397,15 +557,17 @@ const DineDecideApp = () => {
 
   // Surprise Me / Home Page
   const SurpriseMePage = () => (
-    <div className="min-h-screen pb-20" style={{ backgroundColor: '#F5FBFF', fontFamily: 'Josefin Sans, sans-serif' }}>
-      <SearchBar 
-        placeholder="What Would you Like to Eat"
-        onSearch={searchByQuery}
-      />
+    <div
+      className="min-h-screen pb-20"
+      style={{ backgroundColor: '#F5FBFF', fontFamily: 'Josefin Sans, sans-serif' }}
+    >
+      <SearchBar placeholder="What Would you Like to Eat" onSearch={searchByQuery} />
 
       {/* Title */}
       <div className="px-6 pb-4">
-        <h1 className="text-3xl font-bold" style={{ color: '#171F3A' }}>Surprise Me!</h1>
+        <h1 className="text-3xl font-bold" style={{ color: '#171F3A' }}>
+          Surprise Me!
+        </h1>
       </div>
 
       {/* Recipe Cards Grid */}
@@ -414,7 +576,11 @@ const DineDecideApp = () => {
           {[1, 2, 3, 4].map((i) => (
             <div key={i} className="bg-cyan-200 rounded-lg overflow-hidden">
               <div className="h-32 bg-cyan-300 flex items-center justify-center">
-                <p className="text-center text-sm">Image of<br />food</p>
+                <p className="text-center text-sm">
+                  Image of
+                  <br />
+                  food
+                </p>
               </div>
               <div className="p-3 bg-cyan-300">
                 <p className="font-bold text-sm mb-1">Recipe title</p>
@@ -426,107 +592,141 @@ const DineDecideApp = () => {
       </div>
 
       <BottomNav />
-      {showFilterModal && <FilterModal type={showFilterModal} onClose={() => setShowFilterModal(false)} />}
+      {showFilterModal && (
+        <FilterModal type={showFilterModal} onClose={() => setShowFilterModal(false)} />
+      )}
     </div>
   );
 
   // Recent Page
   const RecentPage = () => (
-    <div className="min-h-screen pb-20" style={{ backgroundColor: '#F5FBFF', fontFamily: 'Josefin Sans, sans-serif' }}>
-      <SearchBar 
-        placeholder="What Would you Like to Eat"
-        onSearch={searchByQuery}
-      />
+    <div
+      className="min-h-screen pb-20"
+      style={{ backgroundColor: '#F5FBFF', fontFamily: 'Josefin Sans, sans-serif' }}
+    >
+      <SearchBar placeholder="What Would you Like to Eat" onSearch={searchByQuery} />
 
       <div className="px-6 pb-4">
-        <h1 className="text-3xl font-bold" style={{ color: '#171F3A' }}>Recent</h1>
+        <h1 className="text-3xl font-bold" style={{ color: '#171F3A' }}>
+          Recent
+        </h1>
       </div>
 
       <div className="px-6">
         <div className="grid grid-cols-2 gap-4">
-          {recentRecipes.length > 0 ? recentRecipes.map((recipe) => (
-            <div key={recipe.id} className="bg-gray-200 rounded-lg overflow-hidden cursor-pointer" onClick={() => fetchRecipeDetails(recipe.id)}>
-              <img src={recipe.image} alt={recipe.title} className="h-32 w-full object-cover" />
-              <div className="p-3 bg-cyan-500">
-                <p className="font-bold text-sm mb-1 line-clamp-1">{recipe.title}</p>
-                <p className="text-xs">{recipe.readyInMinutes} min</p>
-              </div>
-            </div>
-          )) : (
-            [1, 2, 3, 4].map((i) => (
-              <div key={i} className="bg-gray-200 rounded-lg overflow-hidden">
-                <div className="h-32 bg-gray-300 flex items-center justify-center">
-                  <p className="text-center text-sm">Image of<br />food</p>
+          {recentRecipes.length > 0
+            ? recentRecipes.map((recipe) => (
+                <div
+                  key={recipe.id}
+                  className="bg-gray-200 rounded-lg overflow-hidden cursor-pointer"
+                  onClick={() => fetchRecipeDetails(recipe.id)}
+                >
+                  <img
+                    src={recipe.image}
+                    alt={recipe.title}
+                    className="h-32 w-full object-cover"
+                  />
+                  <div className="p-3 bg-cyan-500">
+                    <p className="font-bold text-sm mb-1 line-clamp-1">{recipe.title}</p>
+                    <p className="text-xs">{recipe.readyInMinutes} min</p>
+                  </div>
                 </div>
-                <div className="p-3 bg-gray-300">
-                  <p className="font-bold text-sm mb-1">Recipe title</p>
-                  <p className="text-xs">Prep time</p>
+              ))
+            : [1, 2, 3, 4].map((i) => (
+                <div key={i} className="bg-gray-200 rounded-lg overflow-hidden">
+                  <div className="h-32 bg-gray-300 flex items-center justify-center">
+                    <p className="text-center text-sm">
+                      Image of
+                      <br />
+                      food
+                    </p>
+                  </div>
+                  <div className="p-3 bg-gray-300">
+                    <p className="font-bold text-sm mb-1">Recipe title</p>
+                    <p className="text-xs">Prep time</p>
+                  </div>
                 </div>
-              </div>
-            ))
-          )}
+              ))}
         </div>
       </div>
 
       <BottomNav />
-      {showFilterModal && <FilterModal type={showFilterModal} onClose={() => setShowFilterModal(false)} />}
+      {showFilterModal && (
+        <FilterModal type={showFilterModal} onClose={() => setShowFilterModal(false)} />
+      )}
     </div>
   );
 
   // Favorites Page
   const FavoritesPage = () => (
-    <div className="min-h-screen pb-20" style={{ backgroundColor: '#F5FBFF', fontFamily: 'Josefin Sans, sans-serif' }}>
-      <SearchBar 
-        placeholder="What Would you Like to Eat"
-        onSearch={searchByQuery}
-      />
+    <div
+      className="min-h-screen pb-20"
+      style={{ backgroundColor: '#F5FBFF', fontFamily: 'Josefin Sans, sans-serif' }}
+    >
+      <SearchBar placeholder="What Would you Like to Eat" onSearch={searchByQuery} />
 
       <div className="px-6 pb-4">
-        <h1 className="text-3xl font-bold" style={{ color: '#171F3A' }}>Favorites</h1>
+        <h1 className="text-3xl font-bold" style={{ color: '#171F3A' }}>
+          Favorites
+        </h1>
       </div>
 
       <div className="px-6">
         <div className="grid grid-cols-2 gap-4">
-          {favorites.length > 0 ? favorites.map((recipe) => (
-            <div key={recipe.id} className="bg-gray-300 rounded-lg overflow-hidden cursor-pointer" onClick={() => fetchRecipeDetails(recipe.id)}>
-              <img src={recipe.image} alt={recipe.title} className="h-32 w-full object-cover" />
-              <div className="p-3 bg-cyan-500">
-                <p className="font-bold text-sm mb-1 line-clamp-1">{recipe.title}</p>
-                <p className="text-xs">{recipe.readyInMinutes} min</p>
-              </div>
-            </div>
-          )) : (
-            [1, 2, 3, 4].map((i) => (
-              <div key={i} className="bg-gray-200 rounded-lg overflow-hidden">
-                <div className="h-32 bg-gray-300 flex items-center justify-center">
-                  <p className="text-center text-sm">Image of<br />food</p>
+          {favorites.length > 0
+            ? favorites.map((recipe) => (
+                <div
+                  key={recipe.id}
+                  className="bg-gray-300 rounded-lg overflow-hidden cursor-pointer"
+                  onClick={() => fetchRecipeDetails(recipe.id)}
+                >
+                  <img
+                    src={recipe.image}
+                    alt={recipe.title}
+                    className="h-32 w-full object-cover"
+                  />
+                  <div className="p-3 bg-cyan-500">
+                    <p className="font-bold text-sm mb-1 line-clamp-1">{recipe.title}</p>
+                    <p className="text-xs">{recipe.readyInMinutes} min</p>
+                  </div>
                 </div>
-                <div className="p-3 bg-gray-300">
-                  <p className="font-bold text-sm mb-1">Recipe title</p>
-                  <p className="text-xs">Prep time</p>
+              ))
+            : [1, 2, 3, 4].map((i) => (
+                <div key={i} className="bg-gray-200 rounded-lg overflow-hidden">
+                  <div className="h-32 bg-gray-300 flex items-center justify-center">
+                    <p className="text-center text-sm">
+                      Image of
+                      <br />
+                      food
+                    </p>
+                  </div>
+                  <div className="p-3 bg-gray-300">
+                    <p className="font-bold text-sm mb-1">Recipe title</p>
+                    <p className="text-xs">Prep time</p>
+                  </div>
                 </div>
-              </div>
-            ))
-          )}
+              ))}
         </div>
       </div>
 
       <BottomNav />
-      {showFilterModal && <FilterModal type={showFilterModal} onClose={() => setShowFilterModal(false)} />}
+      {showFilterModal && (
+        <FilterModal type={showFilterModal} onClose={() => setShowFilterModal(false)} />
+      )}
     </div>
   );
 
   // Home Page
   const HomePage = () => (
-    <div className="min-h-screen pb-20" style={{ backgroundColor: '#F5FBFF', fontFamily: 'Josefin Sans, sans-serif' }}>
-      <SearchBar 
-        placeholder="What Would you Like to Eat"
-        onSearch={searchByQuery}
-      />
+    <div
+      className="min-h-screen pb-20"
+      style={{ backgroundColor: '#F5FBFF', fontFamily: 'Josefin Sans, sans-serif' }}
+    >
+      <SearchBar placeholder="What Would you Like to Eat" onSearch={searchByQuery} />
 
       <div className="px-6 pb-4">
         <div className="grid grid-cols-2 gap-4">
-          <button 
+          <button
             onClick={() => setCurrentScreen('recent')}
             className="text-white py-3 rounded-lg font-semibold hover:opacity-90"
             style={{ backgroundColor: '#00A7B0' }}
@@ -547,7 +747,7 @@ const DineDecideApp = () => {
         <button
           onClick={() => {
             setSelectedFilter('surprise');
-            fetchRecipes();
+            fetchRecipes(); // Surprise Me respects any other filters too
           }}
           className="w-full text-white py-3 rounded-lg font-semibold hover:opacity-90"
           style={{ backgroundColor: '#00A7B0' }}
@@ -557,9 +757,12 @@ const DineDecideApp = () => {
       </div>
 
       <div className="px-6 pb-6">
+        <h1 className="text-2xl font-bold" style={{ color: '#171F3A' }}>
+          Recommended Recipe:
+        </h1>
         <div className="bg-gray-200 rounded-lg overflow-hidden" style={{ height: '300px' }}>
           {randomRecipe ? (
-            <div 
+            <div
               className="w-full h-full cursor-pointer relative"
               onClick={() => fetchRecipeDetails(randomRecipe.id)}
             >
@@ -574,34 +777,52 @@ const DineDecideApp = () => {
             </div>
           ) : (
             <div className="w-full h-full flex items-center justify-center bg-gray-300">
-              <p className="text-center">Photo of<br />recommended<br />recipe</p>
+              <p className="text-center">
+                Photo of
+                <br />
+                recommended
+                <br />
+                recipe
+              </p>
             </div>
           )}
         </div>
       </div>
 
       <BottomNav />
-      {showFilterModal && <FilterModal type={showFilterModal} onClose={() => setShowFilterModal(false)} />}
+      {showFilterModal && (
+        <FilterModal type={showFilterModal} onClose={() => setShowFilterModal(false)} />
+      )}
     </div>
   );
 
   // Search Results Page
   const SearchResultsPage = () => (
-    <div className="min-h-screen pb-20" style={{ backgroundColor: '#F5FBFF', fontFamily: 'Josefin Sans, sans-serif' }}>
-      <SearchBar 
-        placeholder="What Would you Like to Eat"
-        onSearch={searchByQuery}
-      />
+    <div
+      className="min-h-screen pb-20"
+      style={{ backgroundColor: '#F5FBFF', fontFamily: 'Josefin Sans, sans-serif' }}
+    >
+      <SearchBar placeholder="What Would you Like to Eat" onSearch={searchByQuery} />
 
       <div className="px-6 pb-4">
-        <h1 className="text-3xl font-bold" style={{ color: '#171F3A' }}>Search Result</h1>
+        <h1 className="text-3xl font-bold" style={{ color: '#171F3A' }}>
+          Search Result
+        </h1>
       </div>
 
       <div className="px-6">
         <div className="grid grid-cols-2 gap-4">
           {recipes.map((recipe) => (
-            <div key={recipe.id} className="bg-gray-300 rounded-lg overflow-hidden cursor-pointer" onClick={() => fetchRecipeDetails(recipe.id)}>
-              <img src={recipe.image} alt={recipe.title} className="h-32 w-full object-cover" />
+            <div
+              key={recipe.id}
+              className="bg-gray-300 rounded-lg overflow-hidden cursor-pointer"
+              onClick={() => fetchRecipeDetails(recipe.id)}
+            >
+              <img
+                src={recipe.image}
+                alt={recipe.title}
+                className="h-32 w-full object-cover"
+              />
               <div className="p-3 bg-cyan-500">
                 <p className="font-bold text-sm mb-1 line-clamp-1">{recipe.title}</p>
                 <p className="text-xs">{recipe.readyInMinutes} min</p>
@@ -612,7 +833,9 @@ const DineDecideApp = () => {
       </div>
 
       <BottomNav />
-      {showFilterModal && <FilterModal type={showFilterModal} onClose={() => setShowFilterModal(false)} />}
+      {showFilterModal && (
+        <FilterModal type={showFilterModal} onClose={() => setShowFilterModal(false)} />
+      )}
     </div>
   );
 
@@ -626,30 +849,41 @@ const DineDecideApp = () => {
     const plainSummary = selectedRecipe.summary
       ? selectedRecipe.summary.replace(/<[^>]*>/g, '')
       : '';
-    const summaryFirstSentence = plainSummary
-      ? `${plainSummary.split('.')[0]}.`
-      : '';
+    const summaryFirstSentence = plainSummary ? `${plainSummary.split('.')[0]}.` : '';
 
     return (
-      <div className="min-h-screen pb-20" style={{ backgroundColor: '#F5FBFF', fontFamily: 'Josefin Sans, sans-serif' }}>
+      <div
+        className="min-h-screen pb-20"
+        style={{ backgroundColor: '#F5FBFF', fontFamily: 'Josefin Sans, sans-serif' }}
+      >
         <div className="bg-sky-50 p-4 flex justify-between items-center">
           <button onClick={() => setCurrentScreen('searchResults')}>
             <ArrowLeft className="w-6 h-6" style={{ color: '#171F3A' }} />
           </button>
-          <h1 className="text-xl font-bold" style={{ color: '#171F3A' }}>Details</h1>
+          <h1 className="text-xl font-bold" style={{ color: '#171F3A' }}>
+            Details
+          </h1>
           <button onClick={() => toggleFavorite(selectedRecipe)}>
-            <Heart 
-              className={`w-6 h-6 ${favorites.find(fav => fav.id === selectedRecipe.id) ? 'fill-current' : ''}`}
+            <Heart
+              className={`w-6 h-6 ${
+                favorites.find((fav) => fav.id === selectedRecipe.id) ? 'fill-current' : ''
+              }`}
               style={{ color: '#171F3A' }}
             />
           </button>
         </div>
 
         <div className="p-6">
-          <img src={selectedRecipe.image} alt={selectedRecipe.title} className="w-full h-64 object-cover rounded-lg mb-4 bg-gray-300" />
-          
-          <h2 className="text-2xl font-bold mb-4" style={{ color: '#171F3A' }}>{selectedRecipe.title}</h2>
-          
+          <img
+            src={selectedRecipe.image}
+            alt={selectedRecipe.title}
+            className="w-full h-64 object-cover rounded-lg mb-4 bg-gray-300"
+          />
+
+          <h2 className="text-2xl font-bold mb-4" style={{ color: '#171F3A' }}>
+            {selectedRecipe.title}
+          </h2>
+
           <div className="flex gap-6 mb-4 text-sm">
             <div className="flex items-center gap-2">
               <Clock className="w-5 h-5" />
@@ -667,13 +901,16 @@ const DineDecideApp = () => {
           {/* Ingredients Section */}
           <div className="mb-6">
             <div className="flex items-center gap-2 mb-3">
-              <span className="text-xl">🥕</span>
-              <h3 className="font-bold text-lg" style={{ color: '#171F3A' }}>Ingredients</h3>
+              <h3 className="font-bold text-lg" style={{ color: '#171F3A' }}>
+                Ingredients:
+              </h3>
             </div>
             <ul className="space-y-2 bg-white rounded-lg p-4">
               {selectedRecipe.extendedIngredients?.map((ingredient, index) => (
                 <li key={index} className="flex items-start text-sm">
-                  <span className="mr-2" style={{ color: '#00A7B0' }}>•</span>
+                  <span className="mr-2" style={{ color: '#00A7B0' }}>
+                    •
+                  </span>
                   <span>{ingredient.original}</span>
                 </li>
               ))}
@@ -682,13 +919,17 @@ const DineDecideApp = () => {
 
           <p className="text-sm mb-6">{summaryFirstSentence}</p>
 
-          <h3 className="text-xl font-bold mb-3" style={{ color: '#171F3A' }}>Instructions:</h3>
-          
+          <h3 className="text-xl font-bold mb-3" style={{ color: '#171F3A' }}>
+            Instructions:
+          </h3>
+
           {selectedRecipe.analyzedInstructions?.[0]?.steps ? (
             <ol className="space-y-3 mb-6">
               {selectedRecipe.analyzedInstructions[0].steps.map((step, i) => (
                 <li key={i} className="flex">
-                  <span className="font-bold mr-3" style={{ color: '#00A7B0' }}>{i + 1}.</span>
+                  <span className="font-bold mr-3" style={{ color: '#00A7B0' }}>
+                    {i + 1}.
+                  </span>
                   <span className="text-sm">{step.step}</span>
                 </li>
               ))}
@@ -700,12 +941,14 @@ const DineDecideApp = () => {
             />
           )}
 
-          <p className="text-center text-lg font-bold mb-4">And.... Your Done, Enjoy!</p>
+          <p className="text-center text-lg font-bold mb-4">
+            And.... Your Done, Enjoy!
+          </p>
 
           <div className="text-center mb-4">
             <p className="text-lg font-bold mb-3">Rate Your Meal</p>
             <div className="flex justify-center gap-2">
-              {[1,2,3,4,5].map(star => (
+              {[1, 2, 3, 4, 5].map((star) => (
                 <button
                   key={star}
                   onClick={() => rateRecipe(selectedRecipe.id, star)}
@@ -713,12 +956,18 @@ const DineDecideApp = () => {
                   onMouseLeave={() => setHoveredStar(0)}
                   className="transition-transform hover:scale-110"
                 >
-                  <Star 
-                    className="w-8 h-8" 
-                    style={{ 
-                      color: (hoveredStar >= star || currentRating >= star) ? '#FFD700' : '#D3D3D3',
-                      fill: (hoveredStar >= star || currentRating >= star) ? '#FFD700' : 'transparent'
-                    }} 
+                  <Star
+                    className="w-8 h-8"
+                    style={{
+                      color:
+                        hoveredStar >= star || currentRating >= star
+                          ? '#FFD700'
+                          : '#D3D3D3',
+                      fill:
+                        hoveredStar >= star || currentRating >= star
+                          ? '#FFD700'
+                          : 'transparent',
+                    }}
                   />
                 </button>
               ))}
