@@ -1,136 +1,211 @@
+// App.js
 import React, { useState, useEffect, useRef } from 'react';
-import { Search, Heart, Clock, Users, ArrowLeft, Sliders, Home as HomeIcon, Star } from 'lucide-react';
+import {
+  Search,
+  Heart,
+  Clock,
+  Users,
+  ArrowLeft,
+  Sliders,
+  Home as HomeIcon,
+  Star,
+} from 'lucide-react';
+
+const dietOptions = ['Vegetarian', 'Vegan', 'Gluten Free', 'Dairy Free', 'Ketogenic', 'Paleo'];
+const cuisineOptions = ['Italian', 'Mexican', 'Chinese', 'Indian', 'Japanese', 'Thai', 'French', 'Greek'];
+const mealTypeOptions = ['Breakfast', 'Lunch', 'Dinner'];
 
 const DineDecideApp = () => {
   const [currentScreen, setCurrentScreen] = useState('loading');
-  const [dietaryRestrictions, setDietaryRestrictions] = useState([]);
-  const [selectedFilter, setSelectedFilter] = useState(null); // cuisine / ingredients / surprise
-  const [filterValue, setFilterValue] = useState('');          // used for cuisine
+  const [previousScreen, setPreviousScreen] = useState('home'); // remember where we came from
+
+  // Filters / data
+  const [dietaryRestrictions, setDietaryRestrictions] = useState([]); // array of label strings
+  const [selectedFilter, setSelectedFilter] = useState(null); // 'cuisine' | 'ingredients' | 'surprise' | null
+  const [filterValue, setFilterValue] = useState(''); // cuisine name
+  const [mealTypes, setMealTypes] = useState([]); // e.g. ['Breakfast', 'Dinner']
+
+  const [homeSearchQuery, setHomeSearchQuery] = useState(''); // include ingredients
+  const [excludeIngredients, setExcludeIngredients] = useState(''); // exclude ingredients
+
   const [recipes, setRecipes] = useState([]);
   const [favorites, setFavorites] = useState([]);
   const [disliked, setDisliked] = useState([]);
   const [recentRecipes, setRecentRecipes] = useState([]);
   const [selectedRecipe, setSelectedRecipe] = useState(null);
-
-  // For ingredient filters (include from modal)
-  const [homeSearchQuery, setHomeSearchQuery] = useState('');
-  const [excludeIngredients, setExcludeIngredients] = useState('');
-
-  const [showFilterModal, setShowFilterModal] = useState(false);
   const [randomRecipe, setRandomRecipe] = useState(null);
+
   const [ratings, setRatings] = useState({});
-  const [hoveredStar, setHoveredStar] = useState(0);
+  const [showFilterModal, setShowFilterModal] = useState(false);
 
-  // NEW: meal types chosen in filter modal
-  const [mealTypes, setMealTypes] = useState([]); // e.g. ['Breakfast', 'Dinner']
+  // Dataset loaded from output.json
+  const [dataset, setDataset] = useState([]);
+  const [datasetById, setDatasetById] = useState({});
+  const [allIngredients, setAllIngredients] = useState([]); // master ingredient list for autocomplete
 
-  // API Configuration
-  const SPOONACULAR_API_KEY = '7b35824109da47ea815aef153b566dad';
-  const SPOONACULAR_BASE = 'https://api.spoonacular.com/recipes';
+  // --------- Helper functions for filters ---------- //
 
-  const dietOptions = ['Vegetarian', 'Vegan', 'Gluten Free', 'Dairy Free', 'Ketogenic', 'Paleo'];
-  const cuisineOptions = ['Italian', 'Mexican', 'Chinese', 'Indian', 'Japanese', 'Thai', 'French', 'Greek'];
-  const mealTypeOptions = ['Breakfast', 'Lunch', 'Dinner'];
-
-  // Map UI labels to Spoonacular diet strings
-  const dietApiMap = {
-    Vegetarian: 'vegetarian',
-    Vegan: 'vegan',
-    'Gluten Free': 'gluten free',
-    'Dairy Free': 'dairy free',
-    Ketogenic: 'ketogenic',
-    Paleo: 'paleo',
-  };
-
-  // Map UI meal types to Spoonacular `type` parameter
-  const mealTypeApiMap = {
-    Breakfast: 'breakfast',
-    Lunch: 'main course',
-    Dinner: 'main course',
-  };
-
-  // Helper: normalize comma-separated ingredients -> ['nuts', 'peanuts']
   const normalizeIngredientsList = (csv) =>
     (csv || '')
       .split(',')
       .map((s) => s.trim().toLowerCase())
       .filter(Boolean);
 
-  // Helper: apply client-side filters (disliked + exclude ingredients)
-  const applyClientFilters = (apiResults, excludedList) => {
-    const results = apiResults || [];
-    return results.filter((recipe) => {
-      // Filter out disliked recipes
-      if (disliked.includes(recipe.id)) return false;
+  const strIncludes = (hay = '', needle = '') =>
+    hay.toLowerCase().includes(needle.toLowerCase());
 
-      // Filter out recipes containing excluded ingredients (best-effort text match)
-      if (excludedList.length && recipe.extendedIngredients) {
-        const ingredientText = recipe.extendedIngredients
-          .map((ing) => (ing.original || ing.name || '').toLowerCase())
-          .join(' ');
+  const recipeIngredientsText = (recipe) =>
+    (recipe.extendedIngredients || [])
+      .map((ing) => (ing.original || ing.name || '').toLowerCase())
+      .join(' ');
 
-        if (excludedList.some((bad) => ingredientText.includes(bad))) {
-          return false;
-        }
-      }
+  // Improved meal type matching (Breakfast/Lunch/Dinner)
+  const matchesMealType = (recipe, mealTypesArr) => {
+    if (!mealTypesArr || mealTypesArr.length === 0) return true;
+    const want = mealTypesArr[0]; // only one selected in UI
+    const types = (recipe.dishTypes || []).map((d) => d.toLowerCase());
 
-      return true;
-    });
+    if (want === 'Breakfast') {
+      const breakfastTypes = ['breakfast', 'brunch', 'morning meal'];
+      return types.some((t) => breakfastTypes.includes(t));
+    }
+    if (want === 'Lunch') {
+      const lunchTypes = ['lunch', 'main course', 'main dish'];
+      return types.some((t) => lunchTypes.includes(t));
+    }
+    if (want === 'Dinner') {
+      const dinnerTypes = ['dinner', 'main course', 'main dish'];
+      return types.some((t) => dinnerTypes.includes(t));
+    }
+    return true;
   };
 
-  // Reset all filters 
-  function resetFilters() {
-    setDietaryRestrictions([]);
-    setSelectedFilter(null);
-    setFilterValue('');
-    setHomeSearchQuery('');
-    setExcludeIngredients('');
-    setMealTypes([]);
-  }
+  const matchesCuisine = (recipe, cuisineLabel) => {
+    if (!cuisineLabel) return true;
+    const list = (recipe.cuisines || []).map((c) => c.toLowerCase());
+    return list.includes(cuisineLabel.toLowerCase());
+  };
 
-  // Load saved data
+  const matchesDiet = (recipe, dietLabel) => {
+    if (!dietLabel) return true;
+    // recipe.diets is array of diet strings
+    return (recipe.diets || [])
+      .map((d) => d.toLowerCase())
+      .includes(dietLabel.toLowerCase());
+  };
+
+  const matchesAllIncluded = (recipe, includeCsv) => {
+    const terms = normalizeIngredientsList(includeCsv);
+    if (!terms.length) return true;
+    const text = recipeIngredientsText(recipe);
+    return terms.every((t) => text.includes(t));
+  };
+
+  const matchesNoneExcluded = (recipe, excludeCsv) => {
+    const terms = normalizeIngredientsList(excludeCsv);
+    if (!terms.length) return true;
+    const text = recipeIngredientsText(recipe);
+    return !terms.some((t) => text.includes(t));
+  };
+
+  const baseFilter = (recipe, opts) => {
+    const {
+      dislikedIds,
+      mealTypesArr,
+      cuisineLabel,
+      dietLabel,
+      includeCsv,
+      excludeCsv,
+    } = opts;
+
+    if (dislikedIds.has(recipe.id)) return false;
+    if (!matchesMealType(recipe, mealTypesArr)) return false;
+    if (!matchesCuisine(recipe, cuisineLabel)) return false;
+    if (!matchesDiet(recipe, dietLabel)) return false;
+    if (!matchesAllIncluded(recipe, includeCsv)) return false;
+    if (!matchesNoneExcluded(recipe, excludeCsv)) return false;
+    return true;
+  };
+
+  // --------- Load localStorage + dataset ---------- //
+
   useEffect(() => {
     const savedFavorites = localStorage.getItem('favorites');
     const savedDisliked = localStorage.getItem('disliked');
     const savedRecent = localStorage.getItem('recent');
     const savedRatings = localStorage.getItem('ratings');
+
     if (savedFavorites) setFavorites(JSON.parse(savedFavorites));
     if (savedDisliked) setDisliked(JSON.parse(savedDisliked));
     if (savedRecent) setRecentRecipes(JSON.parse(savedRecent));
     if (savedRatings) setRatings(JSON.parse(savedRatings));
 
+    // Fake loading screen 2 sec then go home
     setTimeout(() => setCurrentScreen('home'), 2000);
   }, []);
 
-  // When we land on Home: reset filters + fetch random recipe 
+  // load dataset from /output.json once
   useEffect(() => {
-    if (currentScreen === 'home') {
+    const loadDataset = async () => {
+      try {
+        const res = await fetch('/output.json');
+        const data = await res.json(); // array of full recipe objects
+        setDataset(data);
+
+        const byId = {};
+        const ingSet = new Set();
+
+        data.forEach((r) => {
+          byId[String(r.id)] = r;
+
+          (r.extendedIngredients || []).forEach((ing) => {
+            const name = (ing.name || ing.original || '')
+              .toLowerCase()
+              .trim();
+            if (name) ingSet.add(name);
+          });
+        });
+
+        setDatasetById(byId);
+        setAllIngredients(Array.from(ingSet).sort());
+      } catch (e) {
+        console.error('Failed to load dataset:', e);
+      }
+    };
+    loadDataset();
+  }, []);
+
+  // When we land on Home: reset filters + pick random recipe
+  useEffect(() => {
+    if (currentScreen === 'home' && dataset.length > 0) {
       resetFilters();
       if (!randomRecipe) {
         fetchRandomRecipe();
       }
     }
-  }, [currentScreen, randomRecipe]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentScreen, dataset]);
 
-  const fetchRandomRecipe = async () => {
-    try {
-      const response = await fetch(
-        `${SPOONACULAR_BASE}/random?apiKey=${SPOONACULAR_API_KEY}&number=1`
-      );
-      const data = await response.json();
-      if (data.recipes && data.recipes.length > 0) {
-        setRandomRecipe(data.recipes[0]);
-      }
-    } catch (error) {
-      console.error('Error fetching random recipe:', error);
-    }
+  // --------- Core actions (JSON-only) ---------- //
+
+  const resetFilters = () => {
+    setDietaryRestrictions([]);
+    setSelectedFilter(null);
+    setFilterValue('');
+    setMealTypes([]);
+    setHomeSearchQuery('');
+    setExcludeIngredients('');
   };
 
-  // Fetch recipes using current filter state OR overrides from modal
   const fetchRecipes = async (options = {}) => {
+    if (!dataset.length) return;
+
     const {
-      includeIngredientsOverride, // from modal include text at click time
-      excludeIngredientsOverride, // from modal exclude text at click time
+      includeIngredientsOverride,
+      excludeIngredientsOverride,
+      mealTypesOverride,   // NEW
+      cuisineOverride,     // NEW
+      dietOverride,        // NEW
     } = options;
 
     const includeValue =
@@ -143,134 +218,223 @@ const DineDecideApp = () => {
         ? excludeIngredientsOverride
         : excludeIngredients;
 
-    try {
-      let url = `${SPOONACULAR_BASE}/complexSearch?apiKey=${SPOONACULAR_API_KEY}&number=12&addRecipeInformation=true&fillIngredients=true`;
+    const dislikedIds = new Set(disliked);
 
-      // Meal type from mealTypes (checkbox)
-      if (mealTypes.length > 0) {
-        const firstMeal = mealTypes[0]; // use the first checked meal type
-        const apiMealType = mealTypeApiMap[firstMeal];
-        if (apiMealType) {
-          url += `&type=${encodeURIComponent(apiMealType)}`;
-        }
-      }
+    // Use overrides if provided, otherwise fall back to state
+    const mealTypesArr =
+      mealTypesOverride !== undefined ? mealTypesOverride : mealTypes;
 
-      // Diet from first selected diet option
-      if (dietaryRestrictions.length > 0) {
-        const dietLabel = dietaryRestrictions[0];
-        const dietParam = dietApiMap[dietLabel];
-        if (dietParam) {
-          url += `&diet=${encodeURIComponent(dietParam)}`;
-        }
-      }
+    const dietLabel =
+      dietOverride !== undefined
+        ? dietOverride
+        : (dietaryRestrictions.length > 0 ? dietaryRestrictions[0] : '');
 
-      // Cuisine / includeIngredients / surprise filters
-      if (selectedFilter === 'cuisine' && filterValue) {
-        url += `&cuisine=${encodeURIComponent(filterValue)}`;
-      } else if (selectedFilter === 'ingredients' && includeValue) {
-        const normalizedInclude = includeValue
-          .split(',')
-          .map((s) => s.trim())
-          .filter(Boolean)
-          .join(',');
-        if (normalizedInclude) {
-          url += `&includeIngredients=${encodeURIComponent(normalizedInclude)}`;
-        }
-      } else if (selectedFilter === 'surprise') {
-        url += `&sort=random`;
-      }
+    const cuisineLabel =
+      cuisineOverride !== undefined
+        ? cuisineOverride
+        : (selectedFilter === 'cuisine' ? filterValue : '');
 
-      // Exclude ingredients 
-      if (excludeValue) {
-        const normalizedExclude = excludeValue
-          .split(',')
-          .map((s) => s.trim())
-          .filter(Boolean)
-          .join(',');
-        if (normalizedExclude) {
-          url += `&excludeIngredients=${encodeURIComponent(normalizedExclude)}`;
-        }
-      }
+    let list = dataset.filter((r) =>
+      baseFilter(r, {
+        dislikedIds,
+        mealTypesArr,
+        cuisineLabel,
+        dietLabel,
+        includeCsv: includeValue,
+        excludeCsv: excludeValue,
+      })
+    );
 
-      const response = await fetch(url);
-      const data = await response.json();
-
-      const excludedList = normalizeIngredientsList(excludeValue);
-      const filteredRecipes = applyClientFilters(data.results, excludedList);
-
-      setRecipes(filteredRecipes);
-      setCurrentScreen('searchResults');
-    } catch (error) {
-      console.error('Error fetching recipes:', error);
+    // Surprise mode: ignore filters, just randomize (still exclude disliked)
+    if (selectedFilter === 'surprise') {
+      list = [...dataset].filter((r) => !dislikedIds.has(r.id));
+      list.sort(() => Math.random() - 0.5);
     }
+
+    setRecipes(list.slice(0, 12));
+    setCurrentScreen('searchResults');
   };
 
-  // Search by query (used by all search bars) – still respects excluded ingredients client-side
-  const searchByQuery = async (query) => {
+  const searchByQuery = (query) => {
+    if (!dataset.length) return;
     const trimmed = (query || '').trim();
     if (!trimmed) return;
 
-    try {
-      let url = `${SPOONACULAR_BASE}/complexSearch?apiKey=${SPOONACULAR_API_KEY}&number=12&addRecipeInformation=true&fillIngredients=true&query=${encodeURIComponent(trimmed)}`;
+    const dislikedIds = new Set(disliked);
+    const dietLabel =
+      dietaryRestrictions.length > 0 ? dietaryRestrictions[0] : '';
+    const cuisineLabel =
+      selectedFilter === 'cuisine' ? filterValue : '';
 
-      const response = await fetch(url);
-      const data = await response.json();
+    // search by title or ingredients text
+    let list = dataset.filter((r) => {
+      const titleHit = strIncludes(r.title || '', trimmed);
+      const ingHit = strIncludes(recipeIngredientsText(r), trimmed);
+      if (!titleHit && !ingHit) return false;
 
-      const excludedList = normalizeIngredientsList(excludeIngredients);
-      const filteredRecipes = applyClientFilters(data.results, excludedList);
+      return baseFilter(r, {
+        dislikedIds,
+        mealTypesArr: mealTypes,
+        cuisineLabel,
+        dietLabel,
+        includeCsv: homeSearchQuery,   // extra include filters from modal
+        excludeCsv: excludeIngredients,
+      });
+    });
 
-      setRecipes(filteredRecipes);
-      setCurrentScreen('searchResults');
-    } catch (error) {
-      console.error('Error searching recipes:', error);
-    }
+    setRecipes(list.slice(0, 12));
+    setCurrentScreen('searchResults');
   };
 
-  // Fetch recipe details
   const fetchRecipeDetails = async (recipeId) => {
-    try {
-      const response = await fetch(
-        `${SPOONACULAR_BASE}/${recipeId}/information?apiKey=${SPOONACULAR_API_KEY}`
-      );
-      const data = await response.json();
-      setSelectedRecipe(data);
-
-      // Add to recent
-      const updatedRecent = [data, ...recentRecipes.filter((r) => r.id !== data.id)].slice(0, 12);
-      setRecentRecipes(updatedRecent);
-      localStorage.setItem('recent', JSON.stringify(updatedRecent));
-
-      setCurrentScreen('detail');
-    } catch (error) {
-      console.error('Error fetching recipe details:', error);
+    const idStr = String(recipeId);
+    const data = datasetById[idStr] || dataset.find((r) => String(r.id) === idStr);
+    if (!data) {
+      console.warn('Recipe not found in dataset:', recipeId);
+      return;
     }
+
+    // remember where we came from for Back button
+    setPreviousScreen(currentScreen);
+
+    setSelectedRecipe(data);
+
+    // Add to recent (max 12)
+    const updatedRecent = [data, ...recentRecipes.filter((r) => r.id !== data.id)].slice(
+      0,
+      12
+    );
+    setRecentRecipes(updatedRecent);
+    localStorage.setItem('recent', JSON.stringify(updatedRecent));
+
+    setCurrentScreen('detail');
   };
 
-  // Toggle favorite
+  const fetchRandomRecipe = () => {
+    if (!dataset.length) return;
+    const dislikedIds = new Set(disliked);
+    const pool = dataset.filter((r) => !dislikedIds.has(r.id));
+    if (!pool.length) return;
+    const r = pool[Math.floor(Math.random() * pool.length)];
+    setRandomRecipe(r);
+  };
+
+  // --------- Favorites / rating ---------- //
+
   const toggleFavorite = (recipe) => {
+    const exists = favorites.some((fav) => fav.id === recipe.id);
     let updatedFavorites;
-    if (favorites.find((fav) => fav.id === recipe.id)) {
+    if (exists) {
       updatedFavorites = favorites.filter((fav) => fav.id !== recipe.id);
     } else {
-      updatedFavorites = [...favorites, recipe];
+      updatedFavorites = [recipe, ...favorites.filter((fav) => fav.id !== recipe.id)];
     }
     setFavorites(updatedFavorites);
     localStorage.setItem('favorites', JSON.stringify(updatedFavorites));
   };
 
-  // Rate recipe
   const rateRecipe = (recipeId, rating) => {
+    const key = String(recipeId); // ensure per-recipe key
     const updatedRatings = {
       ...ratings,
-      [recipeId]: rating,
+      [key]: rating,
     };
     setRatings(updatedRatings);
     localStorage.setItem('ratings', JSON.stringify(updatedRatings));
   };
 
-  // Bottom Navigation
+  // --------- Small presentational components ---------- //
+
+  // Main search bar with autocomplete
+  const SearchBar = ({ placeholder = 'What Would you Like to Eat', onSearch, onOpenFilters }) => {
+    const [searchText, setSearchText] = useState('');
+    const [suggestions, setSuggestions] = useState([]);
+    const inputRef = useRef(null);
+
+    const updateSuggestions = (value) => {
+      const v = value.trim().toLowerCase();
+      if (!v) {
+        setSuggestions([]);
+        return;
+      }
+
+      const titleMatches = dataset
+        .filter((r) => r.title && r.title.toLowerCase().includes(v))
+        .map((r) => r.title);
+
+      const ingredientMatches = allIngredients.filter((ing) => ing.includes(v));
+
+      const combined = Array.from(new Set([...titleMatches, ...ingredientMatches])).slice(
+        0,
+        8
+      );
+
+      setSuggestions(combined);
+    };
+
+    const handleChange = (e) => {
+      const value = e.target.value;
+      setSearchText(value);
+      updateSuggestions(value);
+    };
+
+    const handleKeyDown = (e) => {
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        if (!searchText.trim()) return;
+        onSearch?.(searchText.trim());
+        setSuggestions([]);
+      }
+    };
+
+    const handleSuggestionClick = (suggestion) => {
+      setSearchText(suggestion);
+      setSuggestions([]);
+      onSearch?.(suggestion);
+    };
+
+    return (
+      <div className="p-6 pb-4">
+        <div className="relative">
+          <Search className="absolute left-4 top-1/2 transform -translate-y-1/2 text-black w-5 h-5" />
+          <input
+            type="text"
+            ref={inputRef}
+            value={searchText}
+            onChange={handleChange}
+            onKeyDown={handleKeyDown}
+            placeholder={placeholder}
+            className="w-full pl-12 pr-16 py-3 rounded-lg bg-gray-200 text-black border-0"
+          />
+          <button
+            type="button"
+            onClick={onOpenFilters}
+            className="absolute right-4 top-1/2 transform -translate-y-1/2"
+          >
+            <Sliders className="w-5 h-5" style={{ color: '#171F3A' }} />
+          </button>
+
+          {suggestions.length > 0 && (
+            <div className="absolute left-0 right-0 mt-1 bg-white border rounded-lg shadow-lg max-h-48 overflow-y-auto z-50">
+              {suggestions.map((s) => (
+                <button
+                  key={s}
+                  type="button"
+                  onClick={() => handleSuggestionClick(s)}
+                  className="w-full text-left px-3 py-2 text-sm hover:bg-gray-100"
+                >
+                  {s}
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+      </div>
+    );
+  };
+
   const BottomNav = () => (
-    <div className="fixed bottom-0 left-0 right-0 bg-sky-50 border-t border-gray-300 flex justify-around py-3">
+    <div className="fixed bottom-0 left-0 right-0 bg-white border-t border-gray-200 flex justify-around py-2">
       <button
         onClick={() => setCurrentScreen('recent')}
         className="flex flex-col items-center"
@@ -282,7 +446,12 @@ const DineDecideApp = () => {
       <button
         onClick={() => setCurrentScreen('home')}
         className="flex flex-col items-center"
-        style={{ color: currentScreen === 'home' || currentScreen === 'searchResults' ? '#00a7b0ff' : '#000000ff' }}
+        style={{
+          color:
+            currentScreen === 'home' || currentScreen === 'searchResults'
+              ? '#00a7b0ff'
+              : '#000000ff',
+        }}
       >
         <HomeIcon className="w-6 h-6 mb-1" />
         <span className="text-xs">Home</span>
@@ -298,7 +467,220 @@ const DineDecideApp = () => {
     </div>
   );
 
-  // Loading Screen
+  // Filter modal with ingredient autocomplete
+  const FilterModal = ({ onClose }) => {
+    const excludeRef = useRef(null);
+
+    const [localCuisine, setLocalCuisine] = useState(filterValue);
+    const [localMealTypes, setLocalMealTypes] = useState(mealTypes);
+    const [localDiets, setLocalDiets] = useState(dietaryRestrictions);
+
+    const [localInclude, setLocalInclude] = useState(homeSearchQuery);
+    const [localSuggestions, setLocalSuggestions] = useState([]);
+
+    const toggleLocalMealType = (opt) => {
+      setLocalMealTypes((prev) =>
+        prev.includes(opt) ? prev.filter((x) => x !== opt) : [opt]
+      );
+    };
+
+    const toggleLocalDiet = (opt) => {
+      setLocalDiets((prev) =>
+        prev.includes(opt) ? prev.filter((x) => x !== opt) : [opt]
+      );
+    };
+
+    const handleIncludeChange = (e) => {
+      const value = e.target.value;
+      setLocalInclude(value);
+
+      if (!value.trim()) {
+        setLocalSuggestions([]);
+        return;
+      }
+
+      const parts = value.split(',');
+      const lastPart = parts[parts.length - 1].trim().toLowerCase();
+
+      if (!lastPart) {
+        setLocalSuggestions([]);
+        return;
+      }
+
+      const matches = allIngredients
+        .filter((ing) => ing.startsWith(lastPart))
+        .slice(0, 8);
+
+      setLocalSuggestions(matches);
+    };
+
+    const handleSuggestionClick = (suggestion) => {
+      const parts = localInclude.split(',');
+      parts[parts.length - 1] = ` ${suggestion}`;
+      const newVal = parts.join(',').replace(/^ /, '');
+      setLocalInclude(newVal);
+      setLocalSuggestions([]);
+    };
+
+    const handleApply = () => {
+      const includeVal = localInclude;
+      const excludeVal = excludeRef.current ? excludeRef.current.value : '';
+
+      setHomeSearchQuery(includeVal);
+      setExcludeIngredients(excludeVal);
+      setFilterValue(localCuisine);
+      setMealTypes(localMealTypes);
+      setDietaryRestrictions(localDiets);
+
+      // decide filter mode
+      if (includeVal.trim()) {
+        setSelectedFilter('ingredients');
+      } else if (localCuisine) {
+        setSelectedFilter('cuisine');
+      } else {
+        setSelectedFilter('surprise');
+      }
+
+      fetchRecipes({
+        includeIngredientsOverride: includeVal,
+        excludeIngredientsOverride: excludeVal,
+        mealTypesOverride: localMealTypes,
+        cuisineOverride: localCuisine,
+        dietOverride: localDiets[0] || '',
+      });
+
+      onClose();
+    };
+
+    return (
+      <div className="fixed inset-0 bg-black bg-opacity-40 flex items-center justify-center z-50">
+        <div className="bg-white rounded-xl p-6 w-11/12 max-w-md max-h-[90vh] overflow-y-auto">
+          <h2 className="text-xl font-bold mb-4" style={{ color: '#171F3A' }}>
+            Filters
+          </h2>
+
+          <div className="mb-4">
+            <label className="block text-sm font-semibold mb-1">Cuisine</label>
+            <select
+              value={localCuisine}
+              onChange={(e) => setLocalCuisine(e.target.value)}
+              className="w-full border rounded-lg px-3 py-2 bg-gray-100"
+            >
+              <option value="">Any</option>
+              {cuisineOptions.map((c) => (
+                <option key={c} value={c}>
+                  {c}
+                </option>
+              ))}
+            </select>
+          </div>
+
+          <div className="mb-4">
+            <label className="block text-sm font-semibold mb-1">Meal type</label>
+            <div className="flex gap-2 flex-wrap">
+              {mealTypeOptions.map((opt) => (
+                <button
+                  key={opt}
+                  type="button"
+                  onClick={() => toggleLocalMealType(opt)}
+                  className={`px-3 py-1 rounded-full text-sm ${
+                    localMealTypes.includes(opt)
+                      ? 'bg-cyan-500 text-white'
+                      : 'bg-gray-200 text-gray-800'
+                  }`}
+                >
+                  {opt}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          <div className="mb-4">
+            <label className="block text-sm font-semibold mb-1">Dietary restrictions</label>
+            <div className="flex gap-2 flex-wrap">
+              {dietOptions.map((opt) => (
+                <button
+                  key={opt}
+                  type="button"
+                  onClick={() => toggleLocalDiet(opt)}
+                  className={`px-3 py-1 rounded-full text-sm ${
+                    localDiets.includes(opt)
+                      ? 'bg-cyan-500 text-white'
+                      : 'bg-gray-200 text-gray-800'
+                  }`}
+                >
+                  {opt}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          <div className="mb-4">
+            <label className="block text-sm font-semibold mb-1">
+              Ingredients you want (comma separated)
+            </label>
+            <div className="relative">
+              <textarea
+                value={localInclude}
+                onChange={handleIncludeChange}
+                className="w-full border rounded-lg px-3 py-2 bg-gray-100 text-sm"
+                rows={2}
+                placeholder="e.g. chicken, tomato, onion"
+              />
+
+              {localSuggestions.length > 0 && (
+                <div className="absolute left-0 right-0 mt-1 bg-white border rounded-lg shadow-lg max-h-40 overflow-y-auto z-50">
+                  {localSuggestions.map((ing) => (
+                    <button
+                      key={ing}
+                      type="button"
+                      onClick={() => handleSuggestionClick(ing)}
+                      className="w-full text-left px-3 py-2 text-sm hover:bg-gray-100"
+                    >
+                      {ing}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+
+          <div className="mb-6">
+            <label className="block text-sm font-semibold mb-1">
+              Ingredients you don&apos;t want (comma separated)
+            </label>
+            <textarea
+              ref={excludeRef}
+              defaultValue={excludeIngredients}
+              className="w-full border rounded-lg px-3 py-2 bg-gray-100 text-sm"
+              rows={2}
+            />
+          </div>
+
+          <div className="flex justify-end gap-3">
+            <button
+              type="button"
+              onClick={onClose}
+              className="px-4 py-2 rounded-lg bg-gray-200 text-gray-800 text-sm"
+            >
+              Cancel
+            </button>
+            <button
+              type="button"
+              onClick={handleApply}
+              className="px-4 py-2 rounded-lg bg-cyan-500 text-white text-sm font-semibold"
+            >
+              Apply Filters
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  };
+
+  // --------- Screens ---------- //
+
+  // Logo loading screen
   const LoadingScreen = () => (
     <div
       className="min-h-screen flex items-center justify-center"
@@ -318,411 +700,16 @@ const DineDecideApp = () => {
     </div>
   );
 
-  // Filter Modal Overlay
-  const FilterModal = ({ type, onClose }) => {
-    const includeRef = useRef(null); // Ingredients you want
-    const excludeRef = useRef(null); // Ingredients you don't want
-
-    const handleSearchClick = () => {
-      const includeVal = includeRef.current ? includeRef.current.value : '';
-      const excludeVal = excludeRef.current ? excludeRef.current.value : '';
-
-      // Save into state so they’re available for future opens / searchByQuery
-      setHomeSearchQuery(includeVal);
-      setExcludeIngredients(excludeVal);
-
-      if (includeVal.trim()) {
-        setSelectedFilter('ingredients');
-      }
-
-      onClose();
-
-      // Use overrides so we don't run into async state timing 
-      fetchRecipes({
-        includeIngredientsOverride: includeVal,
-        excludeIngredientsOverride: excludeVal,
-      });
-    };
-
-    const getTitle = () => {
-      if (type === 'dietary') return 'Filter By Dietary Restriction';
-      if (type === 'cuisine') return 'Filter By Cuisine';
-      if (type === 'ingredients') return 'Filter By Ingredients';
-      return 'All Filters';
-    };
-
-    return (
-      <div
-        className="fixed inset-0 z-50 flex items-end"
-        style={{ backgroundColor: 'rgba(0,0,0,0.5)' }}
-      >
-        <div
-          className="bg-gray-200 rounded-t-3xl w-full p-6 max-h-[70vh] overflow-y-auto"
-          style={{ fontFamily: 'Josefin Sans, sans-serif' }}
-        >
-          {/* Header with Back button */}
-          <div className="flex items-center justify-between mb-4">
-            <button
-              type="button"
-              onClick={onClose}
-              className="flex items-center text-sm font-semibold"
-              style={{ color: '#171F3A' }}
-            >
-              <ArrowLeft className="w-5 h-5 mr-1" />
-            </button>
-            <h2
-              className="text-2xl font-bold text-center flex-1"
-              style={{ color: '#171F3A' }}
-            >
-              {getTitle()}
-            </h2>
-            <div className="w-10" />
-          </div>
-
-          {/* Meal Type */}
-          {(type === 'all' || type === 'mealType') && (
-            <div className="mb-6">
-              <h3 className="font-bold text-lg mb-3" style={{ color: '#171F3A' }}>
-                Meal Type
-              </h3>
-              <div className="grid grid-cols-2 gap-3">
-                {mealTypeOptions.map((meal) => (
-                  <label
-                    key={meal}
-                    className="flex items-center bg-white p-3 rounded-lg cursor-pointer"
-                  >
-                    <input
-                      type="checkbox"
-                      checked={mealTypes.includes(meal)}
-                      onChange={() => {
-                        if (mealTypes.includes(meal)) {
-                          setMealTypes(mealTypes.filter((m) => m !== meal));
-                        } else {
-                          setMealTypes([...mealTypes, meal]);
-                        }
-                      }}
-                      className="w-5 h-5 mr-3"
-                      style={{ accentColor: '#00A7B0' }}
-                    />
-                    <span className="text-sm">{meal}</span>
-                  </label>
-                ))}
-              </div>
-            </div>
-          )}
-
-          {/* Dietary */}
-          {(type === 'all' || type === 'dietary') && (
-            <div className="mb-6">
-              <h3 className="font-bold text-lg mb-3" style={{ color: '#171F3A' }}>
-                Dietary Restrictions
-              </h3>
-              <div className="grid grid-cols-2 gap-3">
-                {dietOptions.map((option) => (
-                  <label
-                    key={option}
-                    className="flex items-center bg-white p-3 rounded-lg cursor-pointer"
-                  >
-                    <input
-                      type="checkbox"
-                      checked={dietaryRestrictions.includes(option)}
-                      onChange={() => {
-                        if (dietaryRestrictions.includes(option)) {
-                          setDietaryRestrictions(
-                            dietaryRestrictions.filter((d) => d !== option)
-                          );
-                        } else {
-                          setDietaryRestrictions([...dietaryRestrictions, option]);
-                        }
-                      }}
-                      className="w-5 h-5 mr-3"
-                      style={{ accentColor: '#00A7B0' }}
-                    />
-                    <span className="text-sm">{option}</span>
-                  </label>
-                ))}
-              </div>
-            </div>
-          )}
-
-          {/* Cuisine */}
-          {(type === 'all' || type === 'cuisine') && (
-            <div className="mb-6">
-              <h3 className="font-bold text-lg mb-3" style={{ color: '#171F3A' }}>
-                Cuisine
-              </h3>
-              <div className="grid grid-cols-2 gap-3">
-                {cuisineOptions.map((cuisine) => (
-                  <label
-                    key={cuisine}
-                    className="flex items-center bg-white p-3 rounded-lg cursor-pointer"
-                  >
-                    <input
-                      type="radio"
-                      name="cuisine-filter"
-                      checked={selectedFilter === 'cuisine' && filterValue === cuisine}
-                      onChange={() => {
-                        setSelectedFilter('cuisine');
-                        setFilterValue(cuisine);
-                      }}
-                      className="w-5 h-5 mr-3"
-                      style={{ accentColor: '#00A7B0' }}
-                    />
-                    <span className="text-sm">{cuisine}</span>
-                  </label>
-                ))}
-              </div>
-            </div>
-          )}
-
-          {/* Ingredients */}
-          {(type === 'all' || type === 'ingredients') && (
-            <div className="mb-6">
-              <h3 className="font-bold text-lg mb-3" style={{ color: '#171F3A' }}>
-                Ingredients
-              </h3>
-              <div className="space-y-4">
-                <div>
-                  <label className="block text-base font-semibold mb-2">
-                    Ingredients You want:
-                  </label>
-                  <input
-                    type="text"
-                    ref={includeRef}
-                    defaultValue={homeSearchQuery}
-                    className="w-full p-3 rounded-lg bg-white border-0"
-                  />
-                </div>
-                <div>
-                  <label className="block text-base font-semibold mb-2">
-                    Ingredients You Don't Want:
-                  </label>
-                  <input
-                    type="text"
-                    ref={excludeRef}
-                    defaultValue={excludeIngredients}
-                    className="w-full p-3 rounded-lg bg-white border-0"
-                  />
-                </div>
-              </div>
-            </div>
-          )}
-
-          <button
-            onClick={handleSearchClick}
-            className="w-full text-white py-4 rounded-full text-lg font-bold hover:opacity-90"
-            style={{ backgroundColor: '#00A7B0' }}
-          >
-            Search
-          </button>
-        </div>
-      </div>
-    );
-  };
-
-  // Uncontrolled Search Bar Component with Filter Button
-  const SearchBar = ({ placeholder = 'What Would you Like to Eat', onSearch }) => {
-    const inputRef = useRef(null);
-
-    const handleKeyDown = (e) => {
-      if (e.key === 'Enter') {
-        e.preventDefault();
-        const value = inputRef.current ? inputRef.current.value : '';
-        onSearch?.(value);
-      }
-    };
-
-    return (
-      <div className="p-6 pb-4">
-        <div className="relative">
-          <Search className="absolute left-4 top-1/2 transform -translate-y-1/2 text-black w-5 h-5" />
-          <input
-            type="text"
-            ref={inputRef}
-            placeholder={placeholder}
-            onKeyDown={handleKeyDown}
-            className="w-full pl-12 pr-16 py-3 rounded-lg bg-gray-200 text-black border-0"
-          />
-          <button
-            type="button"
-            onClick={() => setShowFilterModal('all')}
-            className="absolute right-4 top-1/2 transform -translate-y-1/2"
-          >
-            <Sliders className="w-5 h-5" style={{ color: '#171F3A' }} />
-          </button>
-        </div>
-      </div>
-    );
-  };
-
-  // Surprise Me / Home Page
-  const SurpriseMePage = () => (
-    <div
-      className="min-h-screen pb-20"
-      style={{ backgroundColor: '#F5FBFF', fontFamily: 'Josefin Sans, sans-serif' }}
-    >
-      <SearchBar placeholder="What Would you Like to Eat" onSearch={searchByQuery} />
-
-      {/* Title */}
-      <div className="px-6 pb-4">
-        <h1 className="text-3xl font-bold" style={{ color: '#171F3A' }}>
-          Surprise Me!
-        </h1>
-      </div>
-
-      {/* Recipe Cards Grid */}
-      <div className="px-6">
-        <div className="grid grid-cols-2 gap-4">
-          {[1, 2, 3, 4].map((i) => (
-            <div key={i} className="bg-cyan-200 rounded-lg overflow-hidden">
-              <div className="h-32 bg-cyan-300 flex items-center justify-center">
-                <p className="text-center text-sm">
-                  Image of
-                  <br />
-                  food
-                </p>
-              </div>
-              <div className="p-3 bg-cyan-300">
-                <p className="font-bold text-sm mb-1">Recipe title</p>
-                <p className="text-xs">Prep time</p>
-              </div>
-            </div>
-          ))}
-        </div>
-      </div>
-
-      <BottomNav />
-      {showFilterModal && (
-        <FilterModal type={showFilterModal} onClose={() => setShowFilterModal(false)} />
-      )}
-    </div>
-  );
-
-  // Recent Page
-  const RecentPage = () => (
-    <div
-      className="min-h-screen pb-20"
-      style={{ backgroundColor: '#F5FBFF', fontFamily: 'Josefin Sans, sans-serif' }}
-    >
-      <SearchBar placeholder="What Would you Like to Eat" onSearch={searchByQuery} />
-
-      <div className="px-6 pb-4">
-        <h1 className="text-3xl font-bold" style={{ color: '#171F3A' }}>
-          Recent
-        </h1>
-      </div>
-
-      <div className="px-6">
-        <div className="grid grid-cols-2 gap-4">
-          {recentRecipes.length > 0
-            ? recentRecipes.map((recipe) => (
-                <div
-                  key={recipe.id}
-                  className="bg-gray-200 rounded-lg overflow-hidden cursor-pointer"
-                  onClick={() => fetchRecipeDetails(recipe.id)}
-                >
-                  <img
-                    src={recipe.image}
-                    alt={recipe.title}
-                    className="h-32 w-full object-cover"
-                  />
-                  <div className="p-3 bg-cyan-500">
-                    <p className="font-bold text-sm mb-1 line-clamp-1">{recipe.title}</p>
-                    <p className="text-xs">{recipe.readyInMinutes} min</p>
-                  </div>
-                </div>
-              ))
-            : [1, 2, 3, 4].map((i) => (
-                <div key={i} className="bg-gray-200 rounded-lg overflow-hidden">
-                  <div className="h-32 bg-gray-300 flex items-center justify-center">
-                    <p className="text-center text-sm">
-                      Image of
-                      <br />
-                      food
-                    </p>
-                  </div>
-                  <div className="p-3 bg-gray-300">
-                    <p className="font-bold text-sm mb-1">Recipe title</p>
-                    <p className="text-xs">Prep time</p>
-                  </div>
-                </div>
-              ))}
-        </div>
-      </div>
-
-      <BottomNav />
-      {showFilterModal && (
-        <FilterModal type={showFilterModal} onClose={() => setShowFilterModal(false)} />
-      )}
-    </div>
-  );
-
-  // Favorites Page
-  const FavoritesPage = () => (
-    <div
-      className="min-h-screen pb-20"
-      style={{ backgroundColor: '#F5FBFF', fontFamily: 'Josefin Sans, sans-serif' }}
-    >
-      <SearchBar placeholder="What Would you Like to Eat" onSearch={searchByQuery} />
-
-      <div className="px-6 pb-4">
-        <h1 className="text-3xl font-bold" style={{ color: '#171F3A' }}>
-          Favorites
-        </h1>
-      </div>
-
-      <div className="px-6">
-        <div className="grid grid-cols-2 gap-4">
-          {favorites.length > 0
-            ? favorites.map((recipe) => (
-                <div
-                  key={recipe.id}
-                  className="bg-gray-300 rounded-lg overflow-hidden cursor-pointer"
-                  onClick={() => fetchRecipeDetails(recipe.id)}
-                >
-                  <img
-                    src={recipe.image}
-                    alt={recipe.title}
-                    className="h-32 w-full object-cover"
-                  />
-                  <div className="p-3 bg-cyan-500">
-                    <p className="font-bold text-sm mb-1 line-clamp-1">{recipe.title}</p>
-                    <p className="text-xs">{recipe.readyInMinutes} min</p>
-                  </div>
-                </div>
-              ))
-            : [1, 2, 3, 4].map((i) => (
-                <div key={i} className="bg-gray-200 rounded-lg overflow-hidden">
-                  <div className="h-32 bg-gray-300 flex items-center justify-center">
-                    <p className="text-center text-sm">
-                      Image of
-                      <br />
-                      food
-                    </p>
-                  </div>
-                  <div className="p-3 bg-gray-300">
-                    <p className="font-bold text-sm mb-1">Recipe title</p>
-                    <p className="text-xs">Prep time</p>
-                  </div>
-                </div>
-              ))}
-        </div>
-      </div>
-
-      <BottomNav />
-      {showFilterModal && (
-        <FilterModal type={showFilterModal} onClose={() => setShowFilterModal(false)} />
-      )}
-    </div>
-  );
-
-  // Home Page
   const HomePage = () => (
     <div
       className="min-h-screen pb-20"
       style={{ backgroundColor: '#F5FBFF', fontFamily: 'Josefin Sans, sans-serif' }}
     >
-      <SearchBar placeholder="What Would you Like to Eat" onSearch={searchByQuery} />
+      <SearchBar
+        placeholder="What Would you Like to Eat"
+        onSearch={searchByQuery}
+        onOpenFilters={() => setShowFilterModal(true)}
+      />
 
       <div className="px-6 pb-4">
         <div className="grid grid-cols-2 gap-4">
@@ -743,41 +730,40 @@ const DineDecideApp = () => {
         </div>
       </div>
 
-      <div className="px-6 pb-6">
-        <button
-          onClick={() => {
-            setSelectedFilter('surprise');
-            fetchRecipes(); // Surprise Me respects any other filters too
-          }}
-          className="w-full text-white py-3 rounded-lg font-semibold hover:opacity-90"
-          style={{ backgroundColor: '#00A7B0' }}
-        >
-          Surprise Me!
-        </button>
-      </div>
+      {/* Recommended / Surprise card */}
+      <div className="px-6">
+        <h2 className="text-xl font-bold mb-3" style={{ color: '#171F3A' }}>
+          Recommended for you
+        </h2>
 
-      <div className="px-6 pb-6">
-        <h1 className="text-2xl font-bold" style={{ color: '#171F3A' }}>
-          Recommended Recipe:
-        </h1>
-        <div className="bg-gray-200 rounded-lg overflow-hidden" style={{ height: '300px' }}>
+        <div className="bg-white rounded-xl shadow-sm overflow-hidden">
           {randomRecipe ? (
-            <div
-              className="w-full h-full cursor-pointer relative"
-              onClick={() => fetchRecipeDetails(randomRecipe.id)}
-            >
+            <>
               <img
                 src={randomRecipe.image}
                 alt={randomRecipe.title}
-                className="w-full h-full object-cover"
+                className="h-40 w-full object-cover bg-gray-300"
               />
-              <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black/70 to-transparent p-4">
-                <p className="text-white font-semibold">{randomRecipe.title}</p>
+              <div className="p-4">
+                <h3 className="font-bold text-lg mb-1" style={{ color: '#171F3A' }}>
+                  {randomRecipe.title}
+                </h3>
+                <p className="text-sm text-gray-700 mb-2">
+                  Ready in {randomRecipe.readyInMinutes} minutes • Serves{' '}
+                  {randomRecipe.servings}
+                </p>
+                <button
+                  onClick={() => fetchRecipeDetails(randomRecipe.id)}
+                  className="mt-2 px-4 py-2 rounded-lg text-white text-sm font-semibold"
+                  style={{ backgroundColor: '#00A7B0' }}
+                >
+                  View Recipe
+                </button>
               </div>
-            </div>
+            </>
           ) : (
-            <div className="w-full h-full flex items-center justify-center bg-gray-300">
-              <p className="text-center">
+            <div className="h-40 flex items-center justify-center bg-gray-200">
+              <p className="text-center text-sm">
                 Photo of
                 <br />
                 recommended
@@ -790,19 +776,20 @@ const DineDecideApp = () => {
       </div>
 
       <BottomNav />
-      {showFilterModal && (
-        <FilterModal type={showFilterModal} onClose={() => setShowFilterModal(false)} />
-      )}
+      {showFilterModal && <FilterModal onClose={() => setShowFilterModal(false)} />}
     </div>
   );
 
-  // Search Results Page
   const SearchResultsPage = () => (
     <div
       className="min-h-screen pb-20"
       style={{ backgroundColor: '#F5FBFF', fontFamily: 'Josefin Sans, sans-serif' }}
     >
-      <SearchBar placeholder="What Would you Like to Eat" onSearch={searchByQuery} />
+      <SearchBar
+        placeholder="What Would you Like to Eat"
+        onSearch={searchByQuery}
+        onOpenFilters={() => setShowFilterModal(true)}
+      />
 
       <div className="px-6 pb-4">
         <h1 className="text-3xl font-bold" style={{ color: '#171F3A' }}>
@@ -813,10 +800,10 @@ const DineDecideApp = () => {
       <div className="px-6">
         <div className="grid grid-cols-2 gap-4">
           {recipes.map((recipe) => (
-            <div
+            <button
               key={recipe.id}
-              className="bg-gray-300 rounded-lg overflow-hidden cursor-pointer"
               onClick={() => fetchRecipeDetails(recipe.id)}
+              className="bg-cyan-200 rounded-lg overflow-hidden text-left"
             >
               <img
                 src={recipe.image}
@@ -827,53 +814,156 @@ const DineDecideApp = () => {
                 <p className="font-bold text-sm mb-1 line-clamp-1">{recipe.title}</p>
                 <p className="text-xs">{recipe.readyInMinutes} min</p>
               </div>
-            </div>
+            </button>
           ))}
+          {recipes.length === 0 && (
+            <p className="text-sm text-gray-600 col-span-2">
+              No recipes yet – try searching or adjusting your filters.
+            </p>
+          )}
         </div>
       </div>
 
       <BottomNav />
-      {showFilterModal && (
-        <FilterModal type={showFilterModal} onClose={() => setShowFilterModal(false)} />
-      )}
+      {showFilterModal && <FilterModal onClose={() => setShowFilterModal(false)} />}
     </div>
   );
 
-  // Recipe Detail Page
+  const FavoritesPage = () => (
+    <div
+      className="min-h-screen pb-20"
+      style={{ backgroundColor: '#F5FBFF', fontFamily: 'Josefin Sans, sans-serif' }}
+    >
+      <SearchBar
+        placeholder="Search favorites"
+        onSearch={searchByQuery}
+        onOpenFilters={() => setShowFilterModal(true)}
+      />
+
+      <div className="px-6 pb-4 flex items-center gap-2">
+        <button onClick={() => setCurrentScreen('home')}>
+          <ArrowLeft className="w-6 h-6" />
+        </button>
+        <h1 className="text-3xl font-bold" style={{ color: '#171F3A' }}>
+          Favorites
+        </h1>
+      </div>
+
+      <div className="px-6">
+        <div className="grid grid-cols-2 gap-4">
+          {favorites.map((recipe) => (
+            <button
+              key={recipe.id}
+              onClick={() => fetchRecipeDetails(recipe.id)}
+              className="bg-cyan-200 rounded-lg overflow-hidden text-left"
+            >
+              <img
+                src={recipe.image}
+                alt={recipe.title}
+                className="h-32 w-full object-cover"
+              />
+              <div className="p-3 bg-cyan-500">
+                <p className="font-bold text-sm mb-1 line-clamp-1">{recipe.title}</p>
+                <p className="text-xs">{recipe.readyInMinutes} min</p>
+              </div>
+            </button>
+          ))}
+          {favorites.length === 0 && (
+            <p className="text-sm text-gray-600 col-span-2">
+              You haven&apos;t added any favorites yet.
+            </p>
+          )}
+        </div>
+      </div>
+
+      <BottomNav />
+      {showFilterModal && <FilterModal onClose={() => setShowFilterModal(false)} />}
+    </div>
+  );
+
+  const RecentPage = () => (
+    <div
+      className="min-h-screen pb-20"
+      style={{ backgroundColor: '#F5FBFF', fontFamily: 'Josefin Sans, sans-serif' }}
+    >
+      <SearchBar
+        placeholder="Search recent"
+        onSearch={searchByQuery}
+        onOpenFilters={() => setShowFilterModal(true)}
+      />
+
+      <div className="px-6 pb-4 flex items-center gap-2">
+        <button onClick={() => setCurrentScreen('home')}>
+          <ArrowLeft className="w-6 h-6" />
+        </button>
+        <h1 className="text-3xl font-bold" style={{ color: '#171F3A' }}>
+          Recent
+        </h1>
+      </div>
+
+      <div className="px-6">
+        <div className="grid grid-cols-2 gap-4">
+          {recentRecipes.map((recipe) => (
+            <button
+              key={recipe.id}
+              onClick={() => fetchRecipeDetails(recipe.id)}
+              className="bg-cyan-200 rounded-lg overflow-hidden text-left"
+            >
+              <img
+                src={recipe.image}
+                alt={recipe.title}
+                className="h-32 w-full object-cover"
+              />
+              <div className="p-3 bg-cyan-500">
+                <p className="font-bold text-sm mb-1 line-clamp-1">{recipe.title}</p>
+                <p className="text-xs">{recipe.readyInMinutes} min</p>
+              </div>
+            </button>
+          ))}
+          {recentRecipes.length === 0 && (
+            <p className="text-sm text-gray-600 col-span-2">
+              You haven&apos;t viewed any recipes yet.
+            </p>
+          )}
+        </div>
+      </div>
+
+      <BottomNav />
+      {showFilterModal && <FilterModal onClose={() => setShowFilterModal(false)} />}
+    </div>
+  );
+
   const DetailPage = () => {
+    const [hoveredStar, setHoveredStar] = useState(0); // must be before any return
+
     if (!selectedRecipe) return null;
 
-    const currentRating = ratings[selectedRecipe.id] || 0;
+    const ratingKey = String(selectedRecipe.id);
+    const currentRating = ratings[ratingKey] || 0;
 
-    // Safely strip HTML and avoid crash if summary is missing
     const plainSummary = selectedRecipe.summary
       ? selectedRecipe.summary.replace(/<[^>]*>/g, '')
       : '';
     const summaryFirstSentence = plainSummary ? `${plainSummary.split('.')[0]}.` : '';
 
+    const isFavorite = favorites.some((fav) => fav.id === selectedRecipe.id);
+
     return (
       <div
-        className="min-h-screen pb-20"
+        className="min-h-screen pb-24"
         style={{ backgroundColor: '#F5FBFF', fontFamily: 'Josefin Sans, sans-serif' }}
       >
-        <div className="bg-sky-50 p-4 flex justify-between items-center">
-          <button onClick={() => setCurrentScreen('searchResults')}>
-            <ArrowLeft className="w-6 h-6" style={{ color: '#171F3A' }} />
+        <div className="flex items-center px-6 pt-4 pb-2 gap-3">
+          {/* Back now returns to the screen we came from */}
+          <button onClick={() => setCurrentScreen(previousScreen || 'home')}>
+            <ArrowLeft className="w-6 h-6" />
           </button>
-          <h1 className="text-xl font-bold" style={{ color: '#171F3A' }}>
-            Details
+          <h1 className="text-2xl font-bold" style={{ color: '#171F3A' }}>
+            Recipe
           </h1>
-          <button onClick={() => toggleFavorite(selectedRecipe)}>
-            <Heart
-              className={`w-6 h-6 ${
-                favorites.find((fav) => fav.id === selectedRecipe.id) ? 'fill-current' : ''
-              }`}
-              style={{ color: '#171F3A' }}
-            />
-          </button>
         </div>
 
-        <div className="p-6">
+        <div className="px-6 pb-10">
           <img
             src={selectedRecipe.image}
             alt={selectedRecipe.title}
@@ -884,99 +974,101 @@ const DineDecideApp = () => {
             {selectedRecipe.title}
           </h2>
 
-          <div className="flex gap-6 mb-4 text-sm">
+          {/* Info */}
+          <div className="mb-4 flex flex-wrap gap-4">
             <div className="flex items-center gap-2">
               <Clock className="w-5 h-5" />
-              <span>Prep time: {selectedRecipe.readyInMinutes} min</span>
+              <span>Ready in {selectedRecipe.readyInMinutes} min</span>
             </div>
-          </div>
-
-          <div className="mb-4">
-            <div className="flex items-center gap-2 mb-2">
+            <div className="flex items-center gap-2">
               <Users className="w-5 h-5" />
-              <span>Calories: {selectedRecipe.nutrition?.nutrients?.[0]?.amount || 'N/A'}</span>
+              <span>Servings: {selectedRecipe.servings}</span>
             </div>
           </div>
 
-          {/* Ingredients Section */}
+          {/* Summary */}
+          {summaryFirstSentence && (
+            <p className="mb-4 text-sm text-gray-700">{summaryFirstSentence}</p>
+          )}
+
+          {/* Ingredients */}
           <div className="mb-6">
-            <div className="flex items-center gap-2 mb-3">
-              <h3 className="font-bold text-lg" style={{ color: '#171F3A' }}>
-                Ingredients:
-              </h3>
-            </div>
-            <ul className="space-y-2 bg-white rounded-lg p-4">
-              {selectedRecipe.extendedIngredients?.map((ingredient, index) => (
-                <li key={index} className="flex items-start text-sm">
-                  <span className="mr-2" style={{ color: '#00A7B0' }}>
-                    •
-                  </span>
-                  <span>{ingredient.original}</span>
-                </li>
+            <h3 className="font-bold text-lg mb-2" style={{ color: '#171F3A' }}>
+              Ingredients
+            </h3>
+            <ul className="list-disc list-inside text-sm text-gray-700">
+              {(selectedRecipe.extendedIngredients || []).map((ing, idx) => (
+                <li key={idx}>{ing.original}</li>
               ))}
             </ul>
           </div>
 
-          <p className="text-sm mb-6">{summaryFirstSentence}</p>
-
-          <h3 className="text-xl font-bold mb-3" style={{ color: '#171F3A' }}>
-            Instructions:
-          </h3>
-
-          {selectedRecipe.analyzedInstructions?.[0]?.steps ? (
-            <ol className="space-y-3 mb-6">
-              {selectedRecipe.analyzedInstructions[0].steps.map((step, i) => (
-                <li key={i} className="flex">
-                  <span className="font-bold mr-3" style={{ color: '#00A7B0' }}>
-                    {i + 1}.
-                  </span>
-                  <span className="text-sm">{step.step}</span>
-                </li>
-              ))}
-            </ol>
-          ) : (
-            <div
-              dangerouslySetInnerHTML={{ __html: selectedRecipe.instructions || '' }}
-              className="mb-6 text-sm"
-            />
-          )}
-
-          <p className="text-center text-lg font-bold mb-4">
-            And.... Your Done, Enjoy!
-          </p>
-
-          <div className="text-center mb-4">
-            <p className="text-lg font-bold mb-3">Rate Your Meal</p>
-            <div className="flex justify-center gap-2">
-              {[1, 2, 3, 4, 5].map((star) => (
-                <button
-                  key={star}
-                  onClick={() => rateRecipe(selectedRecipe.id, star)}
-                  onMouseEnter={() => setHoveredStar(star)}
-                  onMouseLeave={() => setHoveredStar(0)}
-                  className="transition-transform hover:scale-110"
-                >
-                  <Star
-                    className="w-8 h-8"
-                    style={{
-                      color:
-                        hoveredStar >= star || currentRating >= star
-                          ? '#FFD700'
-                          : '#D3D3D3',
-                      fill:
-                        hoveredStar >= star || currentRating >= star
-                          ? '#FFD700'
-                          : 'transparent',
-                    }}
-                  />
-                </button>
-              ))}
-            </div>
-            {currentRating > 0 && (
-              <p className="text-sm mt-2" style={{ color: '#00A7B0' }}>
-                You rated this recipe {currentRating} star{currentRating !== 1 ? 's' : ''}!
+          {/* Instructions */}
+          <div className="mb-8">
+            <h3 className="font-bold text-lg mb-2" style={{ color: '#171F3A' }}>
+              Instructions
+            </h3>
+            {selectedRecipe.instructions ? (
+              <p className="text-sm text-gray-700 whitespace-pre-wrap">
+                {selectedRecipe.instructions.replace(/<[^>]*>/g, '')}
               </p>
+            ) : (
+              <p className="text-sm text-gray-500">No instructions provided.</p>
             )}
+          </div>
+
+          {/* Favorite + Rating at bottom and centered */}
+          <div className="flex flex-col items-center gap-4">
+            {/* Rating */}
+            <div className="text-center">
+              <p className="text-sm font-semibold mb-2">Rate this recipe:</p>
+              <div className="flex items-center gap-2 justify-center">
+                {[1, 2, 3, 4, 5].map((star) => (
+                  <button
+                    key={star}
+                    onMouseEnter={() => setHoveredStar(star)}
+                    onMouseLeave={() => setHoveredStar(0)}
+                    onClick={() => rateRecipe(selectedRecipe.id, star)}
+                  >
+                    <Star
+                      className="w-6 h-6"
+                      style={{
+                        color:
+                          star <= (hoveredStar || currentRating)
+                            ? '#FFD600'
+                            : '#D1D5DB',
+                        fill:
+                          star <= (hoveredStar || currentRating)
+                            ? '#FFD600'
+                            : 'none',
+                      }}
+                    />
+                  </button>
+                ))}
+              </div>
+              {currentRating > 0 && (
+                <p className="text-xs mt-1 text-gray-600">
+                  You rated this {currentRating} star
+                  {currentRating !== 1 ? 's' : ''}.
+                </p>
+              )}
+            </div>
+
+            {/* Favorite button */}
+            <button
+              onClick={() => toggleFavorite(selectedRecipe)}
+              className="flex items-center gap-2 px-6 py-3 rounded-full font-semibold hover:opacity-90"
+              style={{ backgroundColor: '#00A7B0', color: '#ffffff' }}
+            >
+              <Heart
+                className="w-5 h-5"
+                style={{
+                  color: '#ffffff',
+                  fill: isFavorite ? '#ffffff' : 'none',
+                }}
+              />
+              <span>{isFavorite ? 'Remove from Favorites' : 'Add to Favorites'}</span>
+            </button>
           </div>
         </div>
 
@@ -985,14 +1077,15 @@ const DineDecideApp = () => {
     );
   };
 
+  // --------- Root render ---------- //
+
   return (
     <div>
       {currentScreen === 'loading' && <LoadingScreen />}
-      {currentScreen === 'surpriseMe' && <SurpriseMePage />}
-      {currentScreen === 'recent' && <RecentPage />}
-      {currentScreen === 'favorites' && <FavoritesPage />}
       {currentScreen === 'home' && <HomePage />}
       {currentScreen === 'searchResults' && <SearchResultsPage />}
+      {currentScreen === 'favorites' && <FavoritesPage />}
+      {currentScreen === 'recent' && <RecentPage />}
       {currentScreen === 'detail' && <DetailPage />}
     </div>
   );
