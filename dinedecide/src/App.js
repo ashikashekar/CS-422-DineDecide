@@ -728,6 +728,19 @@ const DineDecideApp = () => {
             Favorites
           </button>
         </div>
+
+        <div className="mt-4">
+          <button
+            onClick={() => {
+              setSelectedFilter('surprise');
+              fetchRecipes({});
+            }}
+            className="w-full text-white py-3 rounded-lg font-semibold hover:opacity-90"
+            style={{ backgroundColor: '#00A7B0' }}
+          >
+            Surprise Me
+          </button>
+        </div>
       </div>
 
       {/* Recommended / Surprise card */}
