@@ -319,6 +319,25 @@ const DineDecideApp = () => {
     setRandomRecipe(r);
   };
 
+  // Pick a fresh random set of recipes for "Surprise Me"
+  const handleSurpriseClick = () => {
+    if (!dataset.length) return;
+
+    const dislikedIds = new Set(disliked);
+
+    // Start from all non-disliked recipes
+    const pool = dataset.filter((r) => !dislikedIds.has(r.id));
+    if (!pool.length) return;
+
+    // Shuffle and take up to 12
+    const shuffled = [...pool].sort(() => Math.random() - 0.5);
+    const surpriseList = shuffled.slice(0, 12);
+
+    setSelectedFilter('surprise');
+    setRecipes(surpriseList);
+    setCurrentScreen('searchResults');
+  };
+
   // --------- Favorites / rating ---------- //
 
   const toggleFavorite = (recipe) => {
@@ -731,10 +750,7 @@ const DineDecideApp = () => {
 
         <div className="mt-4">
           <button
-            onClick={() => {
-              setSelectedFilter('surprise');
-              fetchRecipes({});
-            }}
+            onClick={handleSurpriseClick}
             className="w-full text-white py-3 rounded-lg font-semibold hover:opacity-90"
             style={{ backgroundColor: '#00A7B0' }}
           >
